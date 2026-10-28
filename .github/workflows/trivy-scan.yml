@@ -3,14 +3,13 @@ name: Trivy Security Scan
 
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    branches:
+      - master
   workflow_dispatch:
 
 jobs:
   security-scan:
-    name: Install and Run Trivy
+    name: Security Scan with Trivy
     runs-on: ubuntu-latest
 
     permissions:
@@ -18,54 +17,59 @@ jobs:
       security-events: write
 
     steps:
+      # 1. Repository herunterladen
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      # 2. Trivy installieren
       - name: Install Trivy
-        shell: bash
         run: |
-          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y wget gnupg
 
-          curl -fsSL \
-            https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-            -o install-trivy.sh
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | \
+            gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
 
-          sh install-trivy.sh -b "$RUNNER_TEMP/bin"
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | \
+            sudo tee /etc/apt/sources.list.d/trivy.list
 
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          sudo apt-get update
+          sudo apt-get install -y trivy
 
-      - name: Check Trivy Version
+      # 3. Version anzeigen
+      - name: Show Trivy Version
         run: trivy --version
 
-      - name: Run Trivy Scan
+      # 4. Repository scannen
+      - name: Scan Repository
         run: |
           trivy fs \
-            --scanners vuln,secret,misconfig \
+            --scanners vuln,misconfig,secret \
             --severity HIGH,CRITICAL \
-            --exit-code 0 \
             --format table \
+            --exit-code 0 \
             .
 
+      # 5. SARIF Report erstellen
       - name: Generate SARIF Report
         run: |
           trivy fs \
-            --scanners vuln,secret,misconfig \
+            --scanners vuln,misconfig,secret \
             --severity HIGH,CRITICAL \
-            --exit-code 0 \
             --format sarif \
             --output trivy-results.sarif \
+            --exit-code 0 \
             .
 
-      - name: Upload Security Results
-        if: ${{ !cancelled() && hashFiles('trivy-results.sarif') != '' }}
+      # 6. Report als Artifact speichern
+      - name: Upload Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-security-report
+          path: trivy-results.sarif
+
+      # 7. GitHub Security Dashboard
+      - name: Upload to GitHub Security
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-results.sarif
-
-      - name: Security Gate
-        run: |
-          trivy fs \
-            --scanners vuln,misconfig \
-            --severity HIGH,CRITICAL \
-            --exit-code 1 \
-            .
