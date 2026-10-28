@@ -1,36 +1,71 @@
-name: Trivy Scan
+
+name: Trivy Security Scan
+
 on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
-  security:
+  security-scan:
+    name: Install and Run Trivy
     runs-on: ubuntu-latest
+
     permissions:
-      security-events: write
-      actions: read
       contents: read
+      security-events: write
+
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Run Trivy (console output)
-        uses: aquasecurity/trivy-action@0.36.0
-        with:
-          scan-type: 'fs'
-          format: 'table'
-          severity: 'HIGH,CRITICAL'
-          exit-code: '0'
-      
-      - name: Run Trivy (sarif)
-        uses: aquasecurity/trivy-action@0.36.0
-        with:
-          scan-type: 'fs'
-          format: 'sarif'
-          severity: 'HIGH,CRITICAL'
-          exit-code: '1'
-          output: 'trivy-results.sarif'
-      
-      - name: Upload to GitHub Security
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Trivy
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -fsSL \
+            https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            -o install-trivy.sh
+
+          sh install-trivy.sh -b "$RUNNER_TEMP/bin"
+
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Check Trivy Version
+        run: trivy --version
+
+      - name: Run Trivy Scan
+        run: |
+          trivy fs \
+            --scanners vuln,secret,misconfig \
+            --severity HIGH,CRITICAL \
+            --exit-code 0 \
+            --format table \
+            .
+
+      - name: Generate SARIF Report
+        run: |
+          trivy fs \
+            --scanners vuln,secret,misconfig \
+            --severity HIGH,CRITICAL \
+            --exit-code 0 \
+            --format sarif \
+            --output trivy-results.sarif \
+            .
+
+      - name: Upload Security Results
+        if: ${{ !cancelled() && hashFiles('trivy-results.sarif') != '' }}
         uses: github/codeql-action/upload-sarif@v4
-        if: always()
         with:
-          sarif_file: 'trivy-results.sarif'
+          sarif_file: trivy-results.sarif
+
+      - name: Security Gate
+        run: |
+          trivy fs \
+            --scanners vuln,misconfig \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            .
